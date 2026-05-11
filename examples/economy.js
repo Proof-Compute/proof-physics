@@ -12,7 +12,7 @@
  * Scenario: 3 traders, each tick tries to buy goods from neighbors at price=$5
  */
 
-import { Universe, op, constraint } from '../index.js';
+import { Universe, op, constraint } from '../src/universe.js';
 
 const u = new Universe({
   initialState: {

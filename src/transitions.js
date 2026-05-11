@@ -1,178 +1,159 @@
-// expr.js — safe expression evaluator against state context
-// GNU GPL v3.0 | Commercial License available
-// Copyright © 2026 James Chapman
-
-const OPS = {
-  '+': (a, b) => a + b,
-  '-': (a, b) => a - b,
-  '*': (a, b) => a * b,
-  '/': (a, b) => {
-    if (b === 0) throw new Error('Division by zero');
-    return a / b;
-  },
-  '%': (a, b) => a % b,
-  '**': (a, b) => a ** b,
-  '==': (a, b) => a === b,
-  '!=': (a, b) => a !== b,
-  '<': (a, b) => a < b,
-  '<=': (a, b) => a <= b,
-  '>': (a, b) => a > b,
-  '>=': (a, b) => a >= b,
-  '&&': (a, b) => a && b,
-  '||': (a, b) => a || b,
-};
-
 /**
- * Safe dot-path resolver
- */
-export function resolve(path, state) {
-  if (typeof path !== 'string') return path;
-
-  return path.split('.').reduce((obj, key) => {
-    if (obj && typeof obj === 'object') {
-      return obj[key];
-    }
-    return undefined;
-  }, state);
-}
-
-/**
- * Safe built-ins (restricted surface area for determinism)
- */
-const BUILTINS = {
-  Math: {
-    abs: Math.abs,
-    floor: Math.floor,
-    ceil: Math.ceil,
-    round: Math.round,
-    max: Math.max,
-    min: Math.min,
-    pow: Math.pow,
-    sqrt: Math.sqrt,
-  },
-  Number,
-  String,
-  Boolean,
-  Array,
-  JSON,
-};
-
-/**
- * Evaluate expression node
- */
-export function evaluate(expr, state) {
-  if (expr === null || expr === undefined) return expr;
-
-  // primitives
-  if (typeof expr !== 'object') return expr;
-
-  // array literal (ONLY one canonical form)
-  if (Array.isArray(expr)) {
-    return expr.map(e => evaluate(e, state));
-  }
-
-  // safe reference
-  if (Object.prototype.hasOwnProperty.call(expr, '$ref')) {
-    return resolve(expr.$ref, state);
-  }
-
-  // binary op
-  if (Object.prototype.hasOwnProperty.call(expr, '$op')) {
-    const fn = OPS[expr.$op];
-    if (!fn) throw new Error(`Unknown operator: ${expr.$op}`);
-
-    return fn(
-      evaluate(expr.left, state),
-      evaluate(expr.right, state)
-    );
-  }
-
-  // ternary
-  if (Object.prototype.hasOwnProperty.call(expr, '$if')) {
-    return evaluate(expr.$if, state)
-      ? evaluate(expr.$then, state)
-      : evaluate(expr.$else, state);
-  }
-
-  // explicit array literal form
-  if (Object.prototype.hasOwnProperty.call(expr, '$array')) {
-    return expr.$array.map(e => evaluate(e, state));
-  }
-
-  // safe built-in calls
-  if (Object.prototype.hasOwnProperty.call(expr, '$call')) {
-    const [ns, fn] = expr.$call.split('.');
-
-    const args = (expr.args ?? []).map(a => evaluate(a, state));
-
-    if (!BUILTINS[ns] || !BUILTINS[ns][fn]) {
-      throw new Error(`Unknown built-in: ${expr.$call}`);
-    }
-
-    return BUILTINS[ns][fn](...args);
-  }
-
-  // object evaluation (SAFE: no prototype leakage)
-  const out = {};
-  for (const [k, v] of Object.entries(expr)) {
-    if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
-      continue;
-    }
-    out[k] = evaluate(v, state);
-  }
-
-  return out;
-}
-
-/**
- * transitions.js — deterministic state transitions
+ * transitions.js — deterministic state transitions + op/constraint DSL
  * GNU GPL v3.0 | Commercial License available
  * Copyright © 2026 James Chapman
  */
 
-/**
- * Core deterministic transition function
- * Applies a single execution block to state
- */
-/**
- * transitions.js — deterministic state transitions
- * GNU GPL v3.0 | Commercial License available
- * Copyright © 2026 James Chapman
- */
+import { evaluate } from './expr.js';
 
-export function execBlock(state, block) {
+// ════════════════════════════════════════════════════════════════
+// CORE TRANSITION ENGINE
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * Apply a single transition node to state (returns new state).
+ */
+function applyNode(state, node) {
   const next = structuredClone(state);
+  return applyNodeMut(next, node);
+}
 
-  switch (block.type) {
-    case 'SET':
-      next[block.key] = block.value;
+/**
+ * Mutate `next` in place with a single node. Returns `next`.
+ * (Internal — avoids redundant clones when iterating a list.)
+ */
+function applyNodeMut(next, node) {
+  switch (node.type) {
+    case 'SET': {
+      setPath(next, node.key, evaluate(node.value, next));
       break;
+    }
 
-    case 'INC':
-      next[block.key] = (next[block.key] ?? 0) + block.value;
+    case 'INC': {
+      const cur = getPath(next, node.key) ?? 0;
+      setPath(next, node.key, cur + evaluate(node.value, next));
       break;
+    }
 
-    case 'DEC':
-      next[block.key] = (next[block.key] ?? 0) - block.value;
+    case 'DEC': {
+      const cur = getPath(next, node.key) ?? 0;
+      setPath(next, node.key, cur - evaluate(node.value, next));
       break;
+    }
 
-    case 'MUL':
-      next[block.key] = (next[block.key] ?? 0) * block.value;
+    case 'MUL': {
+      const cur = getPath(next, node.key) ?? 0;
+      setPath(next, node.key, cur * evaluate(node.value, next));
       break;
+    }
 
-    case 'DIV':
-      if (block.value === 0) throw new Error('Division by zero');
-      next[block.key] = (next[block.key] ?? 0) / block.value;
+    case 'DIV': {
+      const divisor = evaluate(node.value, next);
+      if (divisor === 0) throw new Error('Division by zero');
+      const cur = getPath(next, node.key) ?? 0;
+      setPath(next, node.key, cur / divisor);
       break;
+    }
 
-    case 'APPEND':
-      if (!Array.isArray(next[block.key])) next[block.key] = [];
-      next[block.key].push(block.value);
+    case 'APPEND': {
+      const arr = getPath(next, node.key);
+      if (!Array.isArray(arr)) setPath(next, node.key, []);
+      getPath(next, node.key).push(evaluate(node.value, next));
       break;
+    }
+
+    case 'IF': {
+      if (evaluate(node.condition, next)) {
+        for (const child of node.then ?? []) applyNodeMut(next, child);
+      } else if (node.else) {
+        for (const child of node.else) applyNodeMut(next, child);
+      }
+      break;
+    }
 
     default:
-      throw new Error(`Unknown block type: ${block.type}`);
+      throw new Error(`Unknown block type: ${node.type}`);
   }
 
   return next;
+}
+
+/**
+ * execBlock — apply an array of transition nodes to state.
+ * Returns the new state (does not mutate the original).
+ *
+ * @param {object} state - current state
+ * @param {Array}  nodes - array of transition nodes
+ * @returns {{ state: object }}
+ */
+export function execBlock(state, nodes) {
+  const next = structuredClone(state);
+  for (const node of [].concat(nodes)) {
+    applyNodeMut(next, node);
+  }
+  return { state: next };
+}
+
+// ════════════════════════════════════════════════════════════════
+// DOT-PATH HELPERS  (supports "agents.0.balance" style keys)
+// ════════════════════════════════════════════════════════════════
+
+function getPath(obj, path) {
+  return path.split('.').reduce((o, k) => o?.[k], obj);
+}
+
+function setPath(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] === undefined) cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DSL HELPERS — op.set / op.ref / op.binop / op.if / constraint
+// ════════════════════════════════════════════════════════════════
+
+export const op = {
+  /** Set a field: op.set('particle.x', <expr>) */
+  set: (key, value) => ({ type: 'SET', key, value }),
+
+  /** Increment a field: op.inc('score', 1) */
+  inc: (key, value) => ({ type: 'INC', key, value }),
+
+  /** Decrement a field */
+  dec: (key, value) => ({ type: 'DEC', key, value }),
+
+  /** Multiply a field */
+  mul: (key, value) => ({ type: 'MUL', key, value }),
+
+  /** Divide a field */
+  div: (key, value) => ({ type: 'DIV', key, value }),
+
+  /** Append to array field */
+  append: (key, value) => ({ type: 'APPEND', key, value }),
+
+  /** Field reference expression: op.ref('particle.vy') → { $ref: 'particle.vy' } */
+  ref: (path) => ({ $ref: path }),
+
+  /** Binary operation expression: op.binop('+', a, b) → { $op: '+', left: a, right: b } */
+  binop: ($op, left, right) => ({ $op, left, right }),
+
+  /** Ternary expression: op.ternary(cond, thenExpr, elseExpr) */
+  ternary: ($if, $then, $else) => ({ $if, $then, $else }),
+
+  /** Conditional block: op.if(condition, [thenNodes], [elseNodes]) */
+  if: (condition, then_, else_ = []) => ({ type: 'IF', condition, then: then_, else: else_ }),
+};
+
+/**
+ * constraint(message, checkFn) — builds a constraint descriptor.
+ *
+ * @param {string}   message  - human-readable description
+ * @param {Function} check    - (state) => boolean
+ */
+export function constraint(message, check) {
+  return { message, check };
 }

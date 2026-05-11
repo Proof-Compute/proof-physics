@@ -10,7 +10,8 @@
  *   - Time-stepping integration (Euler method)
  */
 
-import { Universe, op, constraint } from '../index.js';
+import { Universe } from '../src/universe.js';
+import { op, constraint } from '../src/transitions.js';
 
 const DT = 0.1; // timestep (seconds)
 const G = -9.8; // gravity (m/s²)

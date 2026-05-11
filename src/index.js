@@ -133,8 +133,6 @@ const commands = {
     const hash1 = u.verify().currentHash;
 
     const u2 = Universe.replay(snap);
-
-    u2.run(n);
     const hash2 = u2.verify().currentHash;
 
     row('original hash', hash1.slice(0, 20) + '...');

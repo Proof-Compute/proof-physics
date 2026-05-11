@@ -9,6 +9,7 @@
 import { hash, merkleRoot } from './hash.js';
 import { execBlock } from './transitions.js';
 import { CausalDAG } from './dag.js';
+export { op, constraint } from './transitions.js';
 
 export class Universe {
   /**
@@ -20,6 +21,7 @@ export class Universe {
    */
   constructor({ initialState, transitions, constraints = [], meta = {} }) {
     this.state = JSON.parse(JSON.stringify(initialState));
+    this._initialState = JSON.parse(JSON.stringify(initialState));
     this.transitions = transitions;
     this.constraints = constraints;
     this.meta = meta;
@@ -67,7 +69,7 @@ export class Universe {
     this._checkConstraints('pre');
 
     // Execute all transitions for this tick
-    const result = execBlock(nodes, this.state);
+    const result = execBlock(this.state, nodes);
     this.state = result.state;
 
     // Post-condition constraints
@@ -107,7 +109,7 @@ export class Universe {
   // 5. Constraint-satisfying — all physical laws honored at every step
 
   verify() {
-    const dagValid = this.dag.verify(); // no cycles
+    const dagValid = this.dag.isAcyclic(); // no cycles
     const merkle = merkleRoot(this.tickHashes); // history Merkle root
 
     return {
@@ -140,7 +142,9 @@ export class Universe {
 
   snapshot() {
     return {
-      initialState: this.history[0]?.stateHash, // hash reference
+      initialState: JSON.parse(JSON.stringify(
+        this.history[0]?._state ?? this._initialState
+      )),
       transitions: this.transitions,
       constraints: this.constraints,
       ticks: this.tick,

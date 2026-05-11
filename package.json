@@ -46,7 +46,7 @@
     "reproducible"
   ],
   "dependencies": {
-    "proof-physics": "^1.0.3"
+    "proof-physics": "^1.0.5"
   },
   "publishConfig": {
     "access": "public"
